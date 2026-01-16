@@ -1,3 +1,6 @@
+#ifndef BIDIAGONAL_H
+#define BIDIAGONAL_H
+
 #include <vector>
 #include <cmath>
 #include <cassert>
@@ -151,3 +154,5 @@ A calculateBidiagonalFrobreniusNorm(const SubMatrixView<A>& subMat) {
     }
     return std::sqrt(sum);
 }
+
+#endif
