@@ -6,7 +6,6 @@
 #include <iostream>
 #include <omp.h>
 
-
 template<typename T>
 struct Matrix;
 template<typename T>
@@ -17,16 +16,17 @@ template<typename T, typename Derived>
 struct MatrixInterface;
 template<typename T>
 struct SVD;
-template<typename T>
-void printMatrixMatlab(Matrix<T>& mat);
+template<typename T, typename Derived>
+void printMatrixMatlab(MatrixInterface<T, Derived>& mat);
 
 template<typename A, typename DerivedA, typename DerivedB, typename DerivedR>
 void matrixProduct(const MatrixInterface<A, DerivedA>& matA,
                    const MatrixInterface<A, DerivedB>& matB,
                    MatrixInterface<A, DerivedR>&       result);
 
-template<typename A, typename B>
+template<typename A>
 void swapMatrices(Matrix<A>& mat1, Matrix<A>& mat2);
+
 
 template<typename T>
 struct Matrix: public MatrixInterface<T, Matrix<T>> {
@@ -61,15 +61,15 @@ struct Matrix: public MatrixInterface<T, Matrix<T>> {
     std::vector<T>& getData() { return data; }
     Matrix          physicalTranspose() const {
         Matrix         result(cols, rows);
-        const uint32_t tile_size = 64;
+        const uint32_t blockSize = 64;
 
-        for (uint32_t r = 0; r < rows; r += tile_size)
+        for (uint32_t r = 0; r < rows; r += blockSize)
         {
-            for (uint32_t c = 0; c < cols; c += tile_size)
+            for (uint32_t c = 0; c < cols; c += blockSize)
             {
-                for (uint32_t i = r; i < std::min(r + tile_size, rows); ++i)
+                for (uint32_t i = r; i < std::min(r + blockSize, rows); ++i)
                 {
-                    for (uint32_t j = c; j < std::min(c + tile_size, cols); ++j)
+                    for (uint32_t j = c; j < std::min(c + blockSize, cols); ++j)
                     {
                         result(j, i) = (*this)(i, j);
                     }
@@ -77,6 +77,12 @@ struct Matrix: public MatrixInterface<T, Matrix<T>> {
             }
         }
         return result;
+    }
+    T* getColumnPointer(uint32_t column) {
+        return &data.data()[column * rows];
+    }
+    void setValue(T value) {
+        std::fill(data.begin(), data.end(), value);
     }
 };
 template<typename T>
@@ -144,7 +150,7 @@ struct MatrixInterface {
     const T operator()(uint32_t r, uint32_t c) const {
         return static_cast<const Derived*>(this)->get(r, c);
     }
-    inline void setValue(T value) {
+    void setValue(T value) {
         std::vector<T>& vec = static_cast<Derived*>(this)->getData();
         std::fill(vec.begin(), vec.end(), value);
     }
@@ -160,14 +166,14 @@ struct SVD {
         S(s),
         V(v) {}
 };
-template<typename T>
-void printMatrixMatlab(Matrix<T>& mat) {
-    for (uint32_t i = 0; i < mat.rows; i++)
+template<typename T, typename Derived>
+void printMatrixMatlab(MatrixInterface<T, Derived>& mat) {
+    for (uint32_t i = 0; i < mat.getRows(); i++)
     {
-        for (uint32_t j = 0; j < mat.cols; j++)
+        for (uint32_t j = 0; j < mat.getCols(); j++)
         {
             std::cout << mat.get(i, j);
-            if (j < mat.cols - 1)
+            if (j < mat.getCols() - 1)
                 std::cout << ", ";
         }
         std::cout << ";\n";
@@ -181,9 +187,9 @@ void matrixProduct(const MatrixInterface<A, DerivedA>& matA,
 
     result.setValue(A(0));
     constexpr uint32_t BS = 64;
-//#ifdef _OPENMP
-//    #pragma omp parallel for
-//#endif
+#ifdef _OPENMP
+//    #pragma omp parallel for collapse(2) schedule(static)
+#endif
     for (int32_t jj = 0; jj < matB.getCols(); jj += BS)
         for (uint32_t kk = 0; kk < matA.getCols(); kk += BS)
             for (uint32_t ii = 0; ii < matA.getRows(); ii += BS)

@@ -1,10 +1,12 @@
 #include <vector>
 #include <iostream>
 #include "testSVD.h"
-
+#include "svd.h"
 int main() {
+
     testSquareMatrixSVD();
-    testThinMatrixSVD();
-    testWideMatrixSVD();
+	testThinMatrixSVD();
+	testWideMatrixSVD();
+
     return 0;
 }
