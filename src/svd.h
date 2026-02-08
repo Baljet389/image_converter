@@ -3,7 +3,6 @@
 
 #include <vector>
 #include <cmath>
-#include <iostream>
 #include "bidiagonal.h"
 
 template<typename A>
@@ -43,7 +42,7 @@ template<typename A>
 struct SVDWorkspace {
     std::vector<RotationEntry<A>> rotL;
     std::vector<RotationEntry<A>> rotR;
-    std::vector<uint32_t> deflationIndices;
+    std::vector<uint32_t>         deflationIndices;
 
 
     void reserve(uint32_t n) {
@@ -83,7 +82,7 @@ SVD<A> calcSVD(Matrix<A>& mat) {
     Matrix<A> V(c, c);
     V.setIdentity();
 
-    SVD<A> svd(U, isWide ? mat.physicalTranspose() : mat, V);
+    SVD<A> svd(U, isWide ? physicalTranspose(mat) : mat, V);
     calculateBidiagonalForm(svd.S, &svd);
 
     SVDWorkspace<A> ws;
@@ -96,7 +95,7 @@ SVD<A> calcSVD(Matrix<A>& mat) {
         // If we computed SVD of A^T = U S V^T,
         // then the original A = V S^T U^T
         // Transpose S back to its original wide shape
-        svd.S = svd.S.physicalTranspose();
+        svd.S = physicalTranspose(svd.S);
         swapMatrices(svd.U, svd.V);
     }
 
@@ -112,7 +111,7 @@ void svdRecursive(SubMatrixView<A>& subMat, SVDWorkspace<A>& ws, SVD<A>* svd) {
 
     do
     {
-       svdIteration(subMat, ws, svd);
+        svdIteration(subMat, ws, svd);
     } while (ws.deflationIndices.empty());
 
     uint32_t start = 0;
@@ -132,8 +131,8 @@ void svdRecursive(SubMatrixView<A>& subMat, SVDWorkspace<A>& ws, SVD<A>* svd) {
 }
 template<typename A>
 void svdIteration(SubMatrixView<A>& mat, SVDWorkspace<A>& ws, SVD<A>* svd) {
-    uint32_t                      n     = std::min(mat.rows, mat.cols);
-    A                             shift = calculateWilkinsonShift(mat);
+    uint32_t n     = std::min(mat.rows, mat.cols);
+    A        shift = calculateWilkinsonShift(mat);
 
     bool updateU = (svd != nullptr && svd->U.data.size() > 0);
     bool updateV = (svd != nullptr && svd->V.data.size() > 0);
@@ -189,9 +188,9 @@ template<typename A>
 void applyInitialRightGivensRotation(SubMatrixView<A>&              mat,
                                      A                              shift,
                                      std::vector<RotationEntry<A>>& rot,
-                                     bool                        updateV) {
-    A    x       = mat(0, 0) * mat(0, 0) - shift;
-    A    y       = mat(0, 0) * mat(0, 1);
+                                     bool                           updateV) {
+    A x = mat(0, 0) * mat(0, 0) - shift;
+    A y = mat(0, 0) * mat(0, 1);
 
     A r = std::hypot(x, y);
     if (r == A(0))
@@ -215,9 +214,9 @@ template<typename A>
 void applyLeftGivensRotation(SubMatrixView<A>&              mat,
                              uint32_t                       k,
                              std::vector<RotationEntry<A>>& rot,
-                             bool                        updateU) {
-    A    x       = mat(k, k);
-    A    y       = mat(k + 1, k);
+                             bool                           updateU) {
+    A x = mat(k, k);
+    A y = mat(k + 1, k);
 
     A r = std::hypot(x, y);
     if (r == A(0))
@@ -244,9 +243,9 @@ template<typename A>
 void applyRightGivensRotation(SubMatrixView<A>&              mat,
                               uint32_t                       k,
                               std::vector<RotationEntry<A>>& rot,
-                              bool                        updateV) {
-    A    x       = mat(k, k + 1);
-    A    y       = mat(k, k + 2);
+                              bool                           updateV) {
+    A x = mat(k, k + 1);
+    A y = mat(k, k + 2);
 
     A r = std::hypot(x, y);
     if (r == A(0))

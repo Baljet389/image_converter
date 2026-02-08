@@ -5,6 +5,7 @@
 #include <vector>
 #include <iostream>
 #include <omp.h>
+#include <iomanip>
 
 template<typename T>
 struct Matrix;
@@ -12,12 +13,16 @@ template<typename T>
 struct TransposeView;
 template<typename A>
 struct SubMatrixView;
+template<typename T>
+struct TransposeSubMatrix;
 template<typename T, typename Derived>
 struct MatrixInterface;
 template<typename T>
 struct SVD;
+template<typename T>
+struct QR;
 template<typename T, typename Derived>
-void printMatrixMatlab(MatrixInterface<T, Derived>& mat);
+void printMatrixMatlab(MatrixInterface<T, Derived>& mat, uint32_t precision = 5);
 
 template<typename A, typename DerivedA, typename DerivedB, typename DerivedR>
 void matrixProduct(const MatrixInterface<A, DerivedA>& matA,
@@ -26,7 +31,8 @@ void matrixProduct(const MatrixInterface<A, DerivedA>& matA,
 
 template<typename A>
 void swapMatrices(Matrix<A>& mat1, Matrix<A>& mat2);
-
+template<typename A>
+Matrix<A> physicalTranspose(Matrix<A>& mat);
 
 template<typename T>
 struct Matrix: public MatrixInterface<T, Matrix<T>> {
@@ -59,31 +65,9 @@ struct Matrix: public MatrixInterface<T, Matrix<T>> {
 
     const T         operator()(uint32_t r, uint32_t c) const { return get(r, c); }
     std::vector<T>& getData() { return data; }
-    Matrix          physicalTranspose() const {
-        Matrix         result(cols, rows);
-        const uint32_t blockSize = 64;
 
-        for (uint32_t r = 0; r < rows; r += blockSize)
-        {
-            for (uint32_t c = 0; c < cols; c += blockSize)
-            {
-                for (uint32_t i = r; i < std::min(r + blockSize, rows); ++i)
-                {
-                    for (uint32_t j = c; j < std::min(c + blockSize, cols); ++j)
-                    {
-                        result(j, i) = (*this)(i, j);
-                    }
-                }
-            }
-        }
-        return result;
-    }
-    T* getColumnPointer(uint32_t column) {
-        return &data.data()[column * rows];
-    }
-    void setValue(T value) {
-        std::fill(data.begin(), data.end(), value);
-    }
+    T*   getColumnPointer(uint32_t column) { return &data.data()[column * rows]; }
+    void setValue(T value) { std::fill(data.begin(), data.end(), value); }
 };
 template<typename T>
 struct TransposeView: public MatrixInterface<T, TransposeView<T>> {
@@ -122,11 +106,29 @@ struct SubMatrixView: public MatrixInterface<T, SubMatrixView<T>> {
     inline void set(uint32_t r, uint32_t c, T value) {
         mat.set(r + rowOffset, c + colOffset, value);
     }
+    T* getColumnPointer(uint32_t column) {
+        return &mat.data.data()[(colOffset + column) * mat.rows + rowOffset];
+    }
 
     T& operator()(uint32_t r, uint32_t c) { return get(r, c); }
 
     const T         operator()(uint32_t r, uint32_t c) const { return get(r, c); }
     std::vector<T>& getData() { return mat.data; }
+};
+template<typename T>
+struct TransposeSubMatrix: public MatrixInterface<T, TransposeSubMatrix<T>> {
+    SubMatrixView<T> subMat;
+    uint32_t         rows, cols;
+    TransposeSubMatrix(SubMatrixView<T>& sm) :
+        subMat(sm),
+        rows(sm.cols),
+        cols(sm.rows) {}
+    inline T        get(uint32_t r, uint32_t c) const { return subMat.get(c, r); }
+    inline T&       get(uint32_t r, uint32_t c) { return subMat.get(c, r); }
+    inline void     set(uint32_t r, uint32_t c, T value) { subMat.set(c, r, value); }
+    T&              operator()(uint32_t r, uint32_t c) { return get(r, c); }
+    const T         operator()(uint32_t r, uint32_t c) const { return get(r, c); }
+    std::vector<T>& getData() { return subMat.getData(); }
 };
 // CRTP
 template<typename T, typename Derived>
@@ -166,13 +168,21 @@ struct SVD {
         S(s),
         V(v) {}
 };
+template<typename T>
+struct QR {
+    Matrix<T> Q;
+    Matrix<T> R;
+    QR(Matrix<T> q, Matrix<T> r) :
+        Q(q),
+        R(r) {}
+};
 template<typename T, typename Derived>
-void printMatrixMatlab(MatrixInterface<T, Derived>& mat) {
+void printMatrixMatlab(MatrixInterface<T, Derived>& mat, uint32_t precision) {
     for (uint32_t i = 0; i < mat.getRows(); i++)
     {
         for (uint32_t j = 0; j < mat.getCols(); j++)
         {
-            std::cout << mat.get(i, j);
+            std::cout << std::setprecision(precision) << mat.get(i, j);
             if (j < mat.getCols() - 1)
                 std::cout << ", ";
         }
@@ -186,18 +196,22 @@ void matrixProduct(const MatrixInterface<A, DerivedA>& matA,
                    MatrixInterface<A, DerivedR>&       result) {
 
     result.setValue(A(0));
-    constexpr uint32_t BS = 64;
+    constexpr uint32_t BS     = 64;
+    int64_t            nBCols = static_cast<int64_t>(matB.getCols());
+    int64_t            nACols = static_cast<int64_t>(matA.getCols());
+    int64_t            nARows = static_cast<int64_t>(matA.getRows());
+
 #ifdef _OPENMP
-//    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for collapse(2) schedule(static)
 #endif
-    for (int32_t jj = 0; jj < matB.getCols(); jj += BS)
-        for (uint32_t kk = 0; kk < matA.getCols(); kk += BS)
-            for (uint32_t ii = 0; ii < matA.getRows(); ii += BS)
-                for (uint32_t j = jj; j < std::min(jj + BS, matB.getCols()); j++)
-                    for (uint32_t k = kk; k < std::min(kk + BS, matA.getCols()); k++)
+    for (int64_t jj = 0; jj < nBCols; jj += BS)
+        for (int64_t kk = 0; kk < nACols; kk += BS)
+            for (int64_t ii = 0; ii < nARows; ii += BS)
+                for (int64_t j = jj; j < std::min(jj + BS, nBCols); j++)
+                    for (int64_t k = kk; k < std::min(kk + BS, nACols); k++)
                     {
                         A a = matB(k, j);
-                        for (uint32_t i = ii; i < std::min(ii + BS, matA.getRows()); i++)
+                        for (int64_t i = ii; i < std::min(ii + BS, nARows); i++)
                             result(i, j) += a * matA(i, k);
                     }
 }
@@ -207,6 +221,26 @@ void swapMatrices(Matrix<A>& mat1, Matrix<A>& mat2) {
     std::swap(mat1.data, mat2.data);
     std::swap(mat1.rows, mat2.rows);
     std::swap(mat1.cols, mat2.cols);
+}
+template<typename A>
+Matrix<A> physicalTranspose(Matrix<A>& mat) {
+    Matrix<A>      result(mat.cols, mat.rows);
+    const uint32_t blockSize = 64;
+
+    for (uint32_t r = 0; r < mat.rows; r += blockSize)
+    {
+        for (uint32_t c = 0; c < mat.cols; c += blockSize)
+        {
+            for (uint32_t i = r; i < std::min(r + blockSize, mat.rows); ++i)
+            {
+                for (uint32_t j = c; j < std::min(c + blockSize, mat.cols); ++j)
+                {
+                    result(j, i) = mat(i, j);
+                }
+            }
+        }
+    }
+    return result;
 }
 
 #endif

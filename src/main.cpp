@@ -1,12 +1,8 @@
-#include <vector>
-#include <iostream>
+
+#include "qr.h"
 #include "testSVD.h"
-#include "svd.h"
 int main() {
 
-    testSquareMatrixSVD();
-	testThinMatrixSVD();
-	testWideMatrixSVD();
-
+    testQR();
     return 0;
 }

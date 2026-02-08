@@ -15,6 +15,7 @@ add_executable(${PROJECT_NAME}
 	src/svd.h
 	src/bidiagonal.h
 	src/testSVD.h
+	src/qr.h
 )
 
 if(MSVC)
