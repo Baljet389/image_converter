@@ -4,11 +4,12 @@
 #include <vector>
 #include <cmath>
 #include "bidiagonal.h"
+#include "utility.h"
 
 template<typename A>
 struct RotationEntry;
 template<typename A>
-SVD<A> calcSVD(Matrix<A>& mat);
+SVD<A> calcSVD(const Matrix<A>& mat);
 template<typename A>
 A calculateWilkinsonShift(const SubMatrixView<A>& mat);
 template<typename A>
@@ -29,7 +30,8 @@ void applyRightGivensRotation(SubMatrixView<A>&              mat,
                               std::vector<RotationEntry<A>>& rot,
                               bool                           updateV);
 template<typename A>
-void svdIteration(SubMatrixView<A>& mat, SVDWorkspace<A>& ws, SVD<A>* svd = nullptr);
+std::vector<uint32_t>
+svdIteration(SubMatrixView<A>& mat, SVDWorkspace<A>& ws, SVD<A>* svd = nullptr);
 template<typename A>
 void svdRecursive(SubMatrixView<A>& subMat, SVDWorkspace<A>& ws, SVD<A>* svd = nullptr);
 template<typename A>
@@ -42,19 +44,16 @@ template<typename A>
 struct SVDWorkspace {
     std::vector<RotationEntry<A>> rotL;
     std::vector<RotationEntry<A>> rotR;
-    std::vector<uint32_t>         deflationIndices;
 
 
     void reserve(uint32_t n) {
         rotL.reserve(n);
         rotR.reserve(n);
-        deflationIndices.reserve(n);
     }
 
     void clear() {
         rotL.clear();
         rotR.clear();
-        deflationIndices.clear();
     }
 };
 template<typename A>
@@ -69,7 +68,7 @@ struct RotationEntry {
 
 
 template<typename A>
-SVD<A> calcSVD(Matrix<A>& mat) {
+SVD<A> calcSVD(const Matrix<A>& mat) {
     bool     isWide = mat.cols > mat.rows;
     uint32_t r      = mat.rows;
     uint32_t c      = mat.cols;
@@ -82,14 +81,19 @@ SVD<A> calcSVD(Matrix<A>& mat) {
     Matrix<A> V(c, c);
     V.setIdentity();
 
+    Timer  timer;
     SVD<A> svd(U, isWide ? physicalTranspose(mat) : mat, V);
+    timer.startTimer();
     calculateBidiagonalForm(svd.S, &svd);
+    auto elapsed = timer.stopTimer();
+    std::cout << "Bidiagonalization took " << elapsed.count() << " ms" << std::endl;
 
     SVDWorkspace<A> ws;
     ws.reserve(std::max(r, c));
     SubMatrixView<A> subMat(svd.S, 0, 0, r, c);
     svdRecursive(subMat, ws, &svd);
-
+    auto svdTime = timer.stopTimer() - elapsed;
+    std::cout << "SVD took " << svdTime.count() << " ms" << std::endl;
     if (isWide)
     {
         // If we computed SVD of A^T = U S V^T,
@@ -108,15 +112,15 @@ void svdRecursive(SubMatrixView<A>& subMat, SVDWorkspace<A>& ws, SVD<A>* svd) {
     if (subMat.cols <= 1 || subMat.rows <= 1)
         return;
 
-
+    std::vector<uint32_t> deflationIndices;
     do
     {
-        svdIteration(subMat, ws, svd);
-    } while (ws.deflationIndices.empty());
+        deflationIndices = svdIteration(subMat, ws, svd);
+    } while (deflationIndices.empty());
 
     uint32_t start = 0;
-    ws.deflationIndices.push_back(std::min(subMat.rows, subMat.cols) - 1);
-    for (const auto& deflationIndex : ws.deflationIndices)
+    deflationIndices.push_back(std::min(subMat.rows, subMat.cols) - 1);
+    for (const auto& deflationIndex : deflationIndices)
     {
         uint32_t blockRows = deflationIndex - start + 1;
         uint32_t blockCols = deflationIndex - start + 1;
@@ -130,13 +134,14 @@ void svdRecursive(SubMatrixView<A>& subMat, SVDWorkspace<A>& ws, SVD<A>* svd) {
     }
 }
 template<typename A>
-void svdIteration(SubMatrixView<A>& mat, SVDWorkspace<A>& ws, SVD<A>* svd) {
+std::vector<uint32_t> svdIteration(SubMatrixView<A>& mat, SVDWorkspace<A>& ws, SVD<A>* svd) {
     uint32_t n     = std::min(mat.rows, mat.cols);
     A        shift = calculateWilkinsonShift(mat);
 
     bool updateU = (svd != nullptr && svd->U.data.size() > 0);
     bool updateV = (svd != nullptr && svd->V.data.size() > 0);
     ws.clear();
+    std::vector<uint32_t> deflationIndices;
     // Introduce the bulge
     applyInitialRightGivensRotation(mat, shift, ws.rotR, updateV);
     // Chase the bulge
@@ -160,9 +165,10 @@ void svdIteration(SubMatrixView<A>& mat, SVDWorkspace<A>& ws, SVD<A>* svd) {
         if (std::abs(offDiagonalElement) < tolerance)
         {
             mat(i, i + 1) = A(0);
-            ws.deflationIndices.push_back(i);
+            deflationIndices.push_back(i);
         }
     }
+    return deflationIndices;
 }
 
 template<typename A>

@@ -3,8 +3,10 @@
 
 #include "bidiagonal.h"
 #include "matrix.h"
+#include "utility.h"
 #include <vector>
 #include <cmath>
+#include <iostream>
 
 template<typename A>
 QR<A> calcQRBlocked(const Matrix<A>& mat, bool updateQ);
@@ -128,12 +130,10 @@ void generatePanel(QRWorkspace<A>& ws, uint32_t currBlockSize, uint32_t col) {
     std::vector<A>& vL = ws.vL;
     Matrix<A>&      R  = ws.R;
     Matrix<A>&      V  = ws.V;
-    Matrix<A>&      T  = ws.T;
 
     for (uint32_t i = col; i < col + currBlockSize; i++)
     {
         const uint32_t m = R.rows - i;
-        const uint32_t n = R.cols - i;
         vL.resize(m);
 
         for (uint32_t j = 0; j < m; j++)
@@ -141,18 +141,21 @@ void generatePanel(QRWorkspace<A>& ws, uint32_t currBlockSize, uint32_t col) {
 
         A tauLeft = calcNormedHouseholder(vL);
 
+        A* VColumnPtr = V.getColumnPointer(i - col) + i;
         for (uint32_t j = 0; j < m; j++)
-            V(j + i, i - col) = vL[j];
+            VColumnPtr[j] = vL[j];
 
         for (uint32_t j = i; j < currBlockSize + col; j++)
         {
-            A dot = 0;
+            A  dot        = 0;
+            A* RColumnPtr = R.getColumnPointer(j) + i;
             for (uint32_t k = 0; k < m; k++)
-                dot += vL[k] * R(k + i, j);
+                dot += vL[k] * RColumnPtr[k];
             A prod = tauLeft * dot;
             for (uint32_t k = 0; k < m; k++)
-                R(k + i, j) -= vL[k] * prod;
+                RColumnPtr[k] -= vL[k] * prod;
         }
+
         updateTMatrix(ws, tauLeft, i - col, i);
     }
 }
@@ -197,65 +200,26 @@ void applyBlockReflectorToR(BlockUpdateWorkspace<A>& blockws) {
     SubMatrixView<A>& activeV   = blockws.activeV;
     SubMatrixView<A>& activeT   = blockws.activeT;
 
-    Matrix<A>& W = blockws.W;
-    Matrix<A>& Y = blockws.Y;
-
     const uint32_t currBlockSize = activeT.rows;
-    const uint32_t currentHeight = activeV.rows;
-    const uint32_t trailingCols  = trailingR.cols;
+    // const uint32_t currentHeight = activeV.rows;
+    const uint32_t trailingCols = trailingR.cols;
+
+    SubMatrixView<A> W(blockws.W, 0, 0, currBlockSize, trailingCols);
+    SubMatrixView<A> Y(blockws.Y, 0, 0, currBlockSize, trailingCols);
 
     // Step A: W = V^T * R_trailing
     // Size: blockSize x trailingCols = (currBlockSize x currentHeight) * (currentHeight x trailingCols)
 
-    for (uint32_t r = 0; r < currBlockSize; r++)
-    {
-        A* colVPtr = activeV.getColumnPointer(r);
-        for (uint32_t k = 0; k < trailingCols; k++)
-        {
-            A  dot     = 0;
-            A* colRPtr = trailingR.getColumnPointer(k);
-            for (uint32_t c = 0; c < currentHeight; c++)
-            {
-                dot += colVPtr[c] * colRPtr[c];
-            }
-            W(r, k) = dot;
-        }
-    }
+    transposeMultMatrix(activeV, trailingR, W);
 
     // Step B: Y = T^T * W
     // Size: blockSize x trailingCols = (currBlockSize x currBlockSize) * (currBlockSize x trailingCols)
 
-    for (uint32_t r = 0; r < currBlockSize; r++)
-    {
-        A* colTPtr = activeT.getColumnPointer(r);
-        for (uint32_t k = 0; k < trailingCols; k++)
-        {
-            A* colWPtr = W.getColumnPointer(k);
-            A  dot     = 0;
-            for (uint32_t c = 0; c < currBlockSize; c++)
-            {
-                dot += colTPtr[c] * colWPtr[c];
-            }
-            Y(r, k) = dot;
-        }
-    }
+    transposeMultMatrix(activeT, W, Y);
 
-    // Step C: R_trailing = R_trailing - V * Ý
+    // Step C: R_trailing = R_trailing - V * Y
     // Size: (currentHeight x trailingCols) = (currentHeight x currBlockSize) * (currBlockSize x trailingCols)
-
-    for (uint32_t r = 0; r < trailingCols; r++)
-    {
-        A* colRPtr = trailingR.getColumnPointer(r);
-        for (uint32_t k = 0; k < currBlockSize; k++)
-        {
-            A* colVPtr = activeV.getColumnPointer(k);
-            A  val     = Y(k, r);
-            for (uint32_t c = 0; c < currentHeight; c++)
-            {
-                colRPtr[c] -= colVPtr[c] * val;
-            }
-        }
-    }
+    matrixMinusMatrixMultMatrix(trailingR, activeV, Y);
 }
 template<typename A>
 void applyBlockReflectorToQ(BlockUpdateWorkspace<A>& blockws) {
@@ -265,61 +229,24 @@ void applyBlockReflectorToQ(BlockUpdateWorkspace<A>& blockws) {
 
     const uint32_t currBlockSize = activeT.rows;
     const uint32_t rows          = trailingQ.rows;
-    const uint32_t cols          = trailingQ.cols;
+    // const uint32_t cols          = trailingQ.cols;
 
-    Matrix<A>& W2 = blockws.W2;
-    Matrix<A>& Y2 = blockws.Y2;
+    SubMatrixView<A> W2(blockws.W2, 0, 0, rows, currBlockSize);
+    SubMatrixView<A> Y2(blockws.Y2, 0, 0, rows, currBlockSize);
 
     // Step A: W = trailingQ * V
     // Size: (rows, cols) * (cols, currBlockSize) = (rows, currBlockSize)
 
-    W2.setValue(0);
-    for (uint32_t r = 0; r < currBlockSize; r++)
-    {
-        A* W2ColPtr = W2.getColumnPointer(r);
-        for (uint32_t k = 0; k < cols; k++)
-        {
-            A  val             = activeV(k, r);
-            A* trailingQColPtr = trailingQ.getColumnPointer(k);
-            for (uint32_t c = 0; c < rows; c++)
-            {
-                W2ColPtr[c] += trailingQColPtr[c] * val;
-            }
-        }
-    }
-    // Step B: W = W * T
-    // Size: (rows, currBlockSize) * (currBlockSize, currBlockSize) = (rows, currBlockSize)
+    matrixMultMatrix(trailingQ, activeV, W2);
 
-    Y2.setValue(0);
-    for (uint32_t r = 0; r < currBlockSize; r++)
-    {
-        A* Y2ColPtr = Y2.getColumnPointer(r);
-        for (uint32_t k = 0; k < currBlockSize; k++)
-        {
-            A  val      = activeT(k, r);
-            A* W2ColPtr = W2.getColumnPointer(k);
-            for (uint32_t c = 0; c < rows; c++)
-            {
-                Y2ColPtr[c] += val * W2ColPtr[c];
-            }
-        }
-    }
+    // Step B: Y = W * T
+    // Size: (rows, currBlockSize) * (currBlockSize, currBlockSize) = (rows, currBlockSize)
+    matrixMultMatrix(W2, activeT, Y2);
+
     // Step C: trailingQ = trailingQ - W_updated * V^T
     // Size: (rows, currBlockSize) * (currBlockSize, cols) = (rows, cols)
 
-    for (uint32_t r = 0; r < cols; r++)
-    {
-        A* trailingQColPtr = trailingQ.getColumnPointer(r);
-        for (uint32_t k = 0; k < currBlockSize; k++)
-        {
-            A* Y2ColPtr = Y2.getColumnPointer(k);
-            A  val      = activeV(r, k);
-            for (uint32_t c = 0; c < rows; c++)
-            {
-                trailingQColPtr[c] -= Y2ColPtr[c] * val;
-            }
-        }
-    }
+    matrixMinusMatrixMultTranspose(trailingQ, Y2, activeV);
 }
 template<typename A>
 A calcNormedHouseholder(std::vector<A>& v) {

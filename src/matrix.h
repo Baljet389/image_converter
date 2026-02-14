@@ -6,6 +6,7 @@
 #include <iostream>
 #include <omp.h>
 #include <iomanip>
+#include <cassert>
 
 template<typename T>
 struct Matrix;
@@ -21,6 +22,8 @@ template<typename T>
 struct SVD;
 template<typename T>
 struct QR;
+template<typename T>
+struct RGBImage;
 template<typename T, typename Derived>
 void printMatrixMatlab(MatrixInterface<T, Derived>& mat, uint32_t precision = 5);
 
@@ -32,7 +35,7 @@ void matrixProduct(const MatrixInterface<A, DerivedA>& matA,
 template<typename A>
 void swapMatrices(Matrix<A>& mat1, Matrix<A>& mat2);
 template<typename A>
-Matrix<A> physicalTranspose(Matrix<A>& mat);
+Matrix<A> physicalTranspose(const Matrix<A>& mat);
 
 template<typename T>
 struct Matrix: public MatrixInterface<T, Matrix<T>> {
@@ -51,8 +54,8 @@ struct Matrix: public MatrixInterface<T, Matrix<T>> {
     void setValues(std::initializer_list<T> list) {
         std::copy(list.begin(), list.end(), data.begin());
     }
-
-    void setIdentity() {
+    inline bool isContiguous() const { return true; }
+    void        setIdentity() {
         for (uint32_t i = 0; i < rows; i++)
         {
             for (uint32_t j = 0; j < cols; j++)
@@ -79,9 +82,9 @@ struct TransposeView: public MatrixInterface<T, TransposeView<T>> {
         rows(m.cols),
         cols(m.rows) {}
 
-    inline T  get(uint32_t r, uint32_t c) const { return mat.get(c, r); }
-    inline T& get(uint32_t r, uint32_t c) { return mat.get(c, r); }
-
+    inline T    get(uint32_t r, uint32_t c) const { return mat.get(c, r); }
+    inline T&   get(uint32_t r, uint32_t c) { return mat.get(c, r); }
+    inline bool isContiguous() const { return false; }
     inline void set(uint32_t r, uint32_t c, T value) { mat.set(c, r, value); }
 
     std::vector<T>& getData() { return mat.data; }
@@ -101,7 +104,8 @@ struct SubMatrixView: public MatrixInterface<T, SubMatrixView<T>> {
 
     inline T get(uint32_t r, uint32_t c) const { return mat.get(r + rowOffset, c + colOffset); }
 
-    inline T& get(uint32_t r, uint32_t c) { return mat.get(r + rowOffset, c + colOffset); }
+    inline T&   get(uint32_t r, uint32_t c) { return mat.get(r + rowOffset, c + colOffset); }
+    inline bool isContiguous() const { return true; }
 
     inline void set(uint32_t r, uint32_t c, T value) {
         mat.set(r + rowOffset, c + colOffset, value);
@@ -128,6 +132,7 @@ struct TransposeSubMatrix: public MatrixInterface<T, TransposeSubMatrix<T>> {
     inline void     set(uint32_t r, uint32_t c, T value) { subMat.set(c, r, value); }
     T&              operator()(uint32_t r, uint32_t c) { return get(r, c); }
     const T         operator()(uint32_t r, uint32_t c) const { return get(r, c); }
+    inline bool     isContiguous() const { return false; }
     std::vector<T>& getData() { return subMat.getData(); }
 };
 // CRTP
@@ -156,6 +161,11 @@ struct MatrixInterface {
         std::vector<T>& vec = static_cast<Derived*>(this)->getData();
         std::fill(vec.begin(), vec.end(), value);
     }
+    bool isContiguous() const { return static_cast<const Derived*>(this)->isContiguous(); }
+    T*   getColumnPointer(uint32_t col) {
+        assert(isContiguous());
+        return static_cast<Derived*>(this)->getColumnPointer(col);
+    }
 };
 
 template<typename T>
@@ -175,6 +185,14 @@ struct QR {
     QR(Matrix<T> q, Matrix<T> r) :
         Q(q),
         R(r) {}
+};
+
+template<typename T>
+struct RGBImage {
+    std::vector<Matrix<T>> channels;
+    uint32_t               rows, cols;
+
+    std::vector<Matrix<T>>& getChannels() { return channels; }
 };
 template<typename T, typename Derived>
 void printMatrixMatlab(MatrixInterface<T, Derived>& mat, uint32_t precision) {
@@ -196,23 +214,20 @@ void matrixProduct(const MatrixInterface<A, DerivedA>& matA,
                    MatrixInterface<A, DerivedR>&       result) {
 
     result.setValue(A(0));
-    constexpr uint32_t BS     = 64;
-    int64_t            nBCols = static_cast<int64_t>(matB.getCols());
-    int64_t            nACols = static_cast<int64_t>(matA.getCols());
-    int64_t            nARows = static_cast<int64_t>(matA.getRows());
+    constexpr uint32_t BS = 64;
 
 #ifdef _OPENMP
     #pragma omp parallel for collapse(2) schedule(static)
 #endif
-    for (int64_t jj = 0; jj < nBCols; jj += BS)
-        for (int64_t kk = 0; kk < nACols; kk += BS)
-            for (int64_t ii = 0; ii < nARows; ii += BS)
-                for (int64_t j = jj; j < std::min(jj + BS, nBCols); j++)
-                    for (int64_t k = kk; k < std::min(kk + BS, nACols); k++)
+    for (uint32_t jj = 0; jj < matB.getCols(); jj += BS)
+        for (uint32_t ii = 0; ii < matA.getCols(); ii += BS)
+            for (uint32_t kk = 0; kk < matA.getRows(); kk += BS)
+                for (uint32_t j = jj; j < std::min(jj + BS, matB.getCols()); j++)
+                    for (uint32_t i = ii; i < std::min(ii + BS, matA.getCols()); i++)
                     {
-                        A a = matB(k, j);
-                        for (int64_t i = ii; i < std::min(ii + BS, nARows); i++)
-                            result(i, j) += a * matA(i, k);
+                        A a = matB(i, j);
+                        for (uint32_t k = kk; k < std::min(kk + BS, matA.getRows()); k++)
+                            result(k, j) += a * matA(k, i);
                     }
 }
 
@@ -223,7 +238,7 @@ void swapMatrices(Matrix<A>& mat1, Matrix<A>& mat2) {
     std::swap(mat1.cols, mat2.cols);
 }
 template<typename A>
-Matrix<A> physicalTranspose(Matrix<A>& mat) {
+Matrix<A> physicalTranspose(const Matrix<A>& mat) {
     Matrix<A>      result(mat.cols, mat.rows);
     const uint32_t blockSize = 64;
 
